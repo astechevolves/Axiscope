@@ -39,31 +39,52 @@ function updateTransform() {
     zoomImage.style.transform = `scale(${scaleX}, ${scaleY})`;
 }
 
+// Set both flip states, update the buttons and re-apply the transform
+function setFlip(horizontal, vertical) {
+    isFlippedHorizontal = !!horizontal;
+    isFlippedVertical = !!vertical;
+
+    $('#flip-horizontal')
+        .toggleClass('btn-primary', isFlippedHorizontal)
+        .toggleClass('btn-secondary', !isFlippedHorizontal);
+    $('#flip-vertical')
+        .toggleClass('btn-primary', isFlippedVertical)
+        .toggleClass('btn-secondary', !isFlippedVertical);
+
+    updateTransform();
+    if (typeof updateJogHint === 'function') updateJogHint();
+}
+
 $(document).ready(function() {
     //Zoom
     const zoomImage = document.getElementById('zoom-image');
     const zoomSlider = document.getElementById('zoom-range');
 
-    // Zoom event listener
+    // Zoom event listener (value remembered between sessions)
+    zoomSlider.value = AxiscopeSettings.get('zoom', zoomSlider.value);
     zoomSlider.addEventListener('input', () => {
         updateTransform();
     });
+    zoomSlider.addEventListener('change', () => {
+        AxiscopeSettings.set('zoom', zoomSlider.value);
+    });
 
-    // Flip controls event listeners
+    // Flip controls event listeners (saved per camera)
+    function saveFlip() {
+        AxiscopeSettings.setCamera(currentCameraUrl, {
+            flipH: isFlippedHorizontal,
+            flipV: isFlippedVertical
+        });
+    }
+
     document.getElementById('flip-horizontal').addEventListener('click', () => {
-        isFlippedHorizontal = !isFlippedHorizontal;
-        updateTransform();
-        // Toggle active state of button
-        document.getElementById('flip-horizontal').classList.toggle('btn-primary');
-        document.getElementById('flip-horizontal').classList.toggle('btn-secondary');
+        setFlip(!isFlippedHorizontal, isFlippedVertical);
+        saveFlip();
     });
 
     document.getElementById('flip-vertical').addEventListener('click', () => {
-        isFlippedVertical = !isFlippedVertical;
-        updateTransform();
-        // Toggle active state of button
-        document.getElementById('flip-vertical').classList.toggle('btn-primary');
-        document.getElementById('flip-vertical').classList.toggle('btn-secondary');
+        setFlip(isFlippedHorizontal, !isFlippedVertical);
+        saveFlip();
     });
 
     // Set initial transform
@@ -76,7 +97,11 @@ $(document).ready(function() {
       const value = slider.value;
       img.style.filter = `contrast(${value}%)`;
     }
+    slider.value = AxiscopeSettings.get('contrast', slider.value);
     slider.addEventListener('input', updateContrast);
+    slider.addEventListener('change', () => {
+        AxiscopeSettings.set('contrast', slider.value);
+    });
     updateContrast();
 
     //LED brightness (Ember Prototype V2 camera, optional)

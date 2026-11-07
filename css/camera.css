@@ -49,3 +49,63 @@
 /* .img-overlay-wrap:hover {
     transform: rotate( 15deg );
 } */
+
+/* ---------- Jog pad around the camera ---------- */
+.jog-frame {
+    display: grid;
+    grid-template-columns: 48px 1fr 48px;
+    grid-template-rows: 48px auto 48px;
+    gap: 4px;
+    width: 100%;
+}
+
+.jog-up     { grid-column: 2; grid-row: 1; }
+.jog-left   { grid-column: 1; grid-row: 2; }
+.jog-center { grid-column: 2; grid-row: 2; position: relative; }
+.jog-right  { grid-column: 3; grid-row: 2; }
+.jog-down   { grid-column: 2; grid-row: 3; }
+
+.jog-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    padding: 0;
+    font-size: 1.4rem;
+    line-height: 1;
+}
+
+.jog-up, .jog-down {
+    flex-direction: row;
+    gap: 8px;
+}
+
+.jog-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    opacity: 0.8;
+}
+
+.jog-btn.jog-calibrating {
+    animation: jog-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes jog-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(255, 193, 7, 0.0); }
+    50%      { box-shadow: 0 0 0 3px rgba(255, 193, 7, 0.8); }
+}
+
+.jog-banner {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    z-index: 2;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.75);
+    color: #fff;
+    font-size: 0.9rem;
+    text-align: center;
+}

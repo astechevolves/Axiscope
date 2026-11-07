@@ -23,8 +23,10 @@
     >
     </script>
 
+    <script src="./js/settings.js"></script>
     <script src="./js/camera.js"></script>
     <script src="./js/index.js"></script>
+    <script src="./js/jog.js"></script>
     <script src="./js/tools.js"></script>
     <script src="./js/gcode.js"></script>
 
@@ -64,9 +66,6 @@
         .camera-list-container {
             max-height: 400px;
             overflow-y: auto;
-        }
-        #camContainer {
-            display: none;
         }
     </style>
   </head>
@@ -133,13 +132,38 @@
                                 </button>
                             </div>
                         </div>
-                        <div id="camContainer" class="img-overlay-wrap">
-                        <img id="zoom-image" src="" width="800"/>
-                        <svg viewBox="0 0 200 200">
-                            <circle cx="100" cy="75" r="50" stroke="red" stroke-width="0.25" fill="none"/>
-                            <line x1="100" y1="15" x2="100" y2="135" stroke="red" stroke-width="0.25" />
-                            <line x1="40" y1="75" x2="160" y2="75" stroke="red" stroke-width="0.25" />
-                        </svg>
+                        <!-- Camera with jog arrows around it: click the direction you want the nozzle to move -->
+                        <div id="jogFrame" class="jog-frame d-none">
+                            <button type="button" class="btn btn-secondary jog-btn jog-up" data-jog="up" title="Move up in image (Arrow Up)">
+                                <i class="bi bi-caret-up-fill"></i><span class="jog-label"></span>
+                            </button>
+                            <button type="button" class="btn btn-secondary jog-btn jog-left" data-jog="left" title="Move left in image (Arrow Left)">
+                                <i class="bi bi-caret-left-fill"></i><span class="jog-label"></span>
+                            </button>
+                            <div class="jog-center">
+                                <div id="camContainer" class="img-overlay-wrap">
+                                <img id="zoom-image" src="" width="800"/>
+                                <svg viewBox="0 0 200 200">
+                                    <circle cx="100" cy="75" r="50" stroke="red" stroke-width="0.25" fill="none"/>
+                                    <line x1="100" y1="15" x2="100" y2="135" stroke="red" stroke-width="0.25" />
+                                    <line x1="40" y1="75" x2="160" y2="75" stroke="red" stroke-width="0.25" />
+                                </svg>
+                                </div>
+                                <div id="jog-banner" class="jog-banner d-none"></div>
+                            </div>
+                            <button type="button" class="btn btn-secondary jog-btn jog-right" data-jog="right" title="Move right in image (Arrow Right)">
+                                <i class="bi bi-caret-right-fill"></i><span class="jog-label"></span>
+                            </button>
+                            <button type="button" class="btn btn-secondary jog-btn jog-down" data-jog="down" title="Move down in image (Arrow Down)">
+                                <i class="bi bi-caret-down-fill"></i><span class="jog-label"></span>
+                            </button>
+                        </div>
+                        <div class="d-flex flex-wrap align-items-center justify-content-center gap-2 pt-2">
+                            <small class="text-secondary">Step (mm)</small>
+                            <div class="btn-group btn-group-sm" role="group" id="jog-steps" aria-label="Jog step size"></div>
+                            <button type="button" class="btn btn-sm btn-warning" id="jog-calibrate">
+                                <i class="bi bi-compass"></i> Calibrate directions
+                            </button>
                         </div>
                         <div class="row p-2">
                         <div class="col-1">
@@ -195,7 +219,6 @@
                             </div>
                         </div>
                         </div>
-                        <div id="BouncePositionBar"></div>
                         <div id="BigPositionBar"></div>
                         <!-- Endstop Position Section -->
                         <div id="endstop-section" class="mt-2 mb-1 border-top border-secondary pt-2" style="display:none;">

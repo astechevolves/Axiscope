@@ -1,8 +1,8 @@
 // Global variables and utility functions
 let printerIp = '';
-let WebcamPath = '/webcam?action=stream';
-let path = '/webcam?action=stream';
 let updateInterval = null;
+let currentCameraUrl = null;   // stream URL of the connected camera
+let selectedCamera = null;     // camera picked in the modal: {url, flipH, flipV}
 
 function printerUrl(ip, endpoint) {
     ip = ip.replace(/^https?:\/\//, '');
@@ -272,6 +272,7 @@ function ComandsUrl(axis, value) {
         bounce = value - .5;
         move = .5;
     }
+    bounce = parseFloat(bounce.toFixed(3));
     
     $.each(bouncesComands, function(k, comand){
         if(comand == '-bounce-')
@@ -367,23 +368,209 @@ function deleteMacro(index) {
     loadMacros();
 }
 
+// Show a status message in the printer modal. Errors force the modal open so a
+// failed auto-connect on page load is still visible.
+function showConnectStatus(message, isError) {
+    $('#ipError')
+        .toggleClass('text-danger', !!isError)
+        .toggleClass('text-success', !isError)
+        .text(message)
+        .show();
+    if (isError && !$('#printerModal').hasClass('show')) {
+        $('#printerModal').modal('show');
+    }
+}
+
+function resolveStreamUrl(ip, streamUrl) {
+    try {
+        new URL(streamUrl);
+        return streamUrl; // Already a full URL (e.g. remote camera)
+    } catch (e) {
+        return printerUrl(ip, streamUrl); // Just a path - prefix the printer IP
+    }
+}
+
+// Connect to Moonraker and list cameras. If autoCameraUrl matches one of the
+// printer's cameras, connect to it straight away.
+function connectPrinter(ip, autoCameraUrl) {
+    ip = ip.trim().replace(/^https?:\/\//, '');
+    if (!isValidIP(ip)) {
+        showConnectStatus('Invalid IP address format', true);
+        return;
+    }
+
+    const $btn = $('#saveIpBtn');
+    const resetButton = () => $btn.prop('disabled', false).text('Retry Connection');
+    $btn.prop('disabled', true)
+        .html('<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Connecting...');
+
+    $.ajax({ url: printerUrl(ip, '/server/info'), timeout: 5000 }).done(function(con_data) {
+        if (!(con_data['result'] && con_data['result']['klippy_connected'])) {
+            showConnectStatus('Printer is not ready. Please check if Klippy is connected.', true);
+            resetButton();
+            return;
+        }
+
+        showConnectStatus('Connected successfully!', false);
+        $('#printerIp').val(ip).prop('disabled', true);
+        $('#disconnectBtn').show();
+
+        $.get(printerUrl(ip, '/server/webcams/list')).done(function(cam_data) {
+            const cams = cam_data['result'] && cam_data['result']['webcams'];
+            if (!cams) {
+                showConnectStatus('Error fetching camera list', true);
+                resetButton();
+                return;
+            }
+            if (cams.length === 0) {
+                showConnectStatus('No cameras found on this printer', true);
+                resetButton();
+                return;
+            }
+
+            const $cameraList = $('#cameraList');
+            $cameraList.empty();
+
+            cams.forEach(function(cam) {
+                const streamUrl = resolveStreamUrl(ip, cam.stream_url);
+                const snapshotUrl = streamUrl.replace('?action=stream', '?action=snapshot');
+
+                $cameraList.append(`
+                    <div class="camera-option p-2"
+                         data-url="${streamUrl}"
+                         data-flip-h="${cam.flip_horizontal}"
+                         data-flip-v="${cam.flip_vertical}"
+                    >
+                        <div class="d-flex align-items-center">
+                            <div class="me-3">
+                                <img src="${snapshotUrl}" class="camera-preview" alt="${cam.name}">
+                            </div>
+                            <div>
+                                <h6 class="mb-0">${cam.name}</h6>
+                                <small class="text-muted">Click to select, double-click to connect</small>
+                            </div>
+                        </div>
+                    </div>`);
+            });
+
+            $('#camera-select').show();
+            $btn.html('Select Camera').prop('disabled', true)
+                .removeClass('btn-primary').addClass('btn-success');
+
+            if (autoCameraUrl) {
+                const $match = $('.camera-option').filter(function() {
+                    return $(this).data('url') === autoCameraUrl;
+                });
+                if ($match.length) {
+                    selectCameraOption($match.first());
+                    connectCamera(ip, selectedCamera);
+                    return;
+                }
+                showConnectStatus('Saved camera not found - please select a camera', true);
+            }
+        }).fail(function(error) {
+            console.error('Failed to fetch cameras:', error);
+            showConnectStatus('Could not fetch camera list from printer', true);
+            resetButton();
+        });
+    }).fail(function(error) {
+        console.error('Connection failed:', error);
+        $('#printerIp').prop('disabled', false);
+        showConnectStatus('Could not connect to printer. Please check the IP address and ensure the printer is online.', true);
+        resetButton();
+    });
+}
+
+function selectCameraOption($option) {
+    $('.camera-option').removeClass('selected');
+    $option.addClass('selected');
+    selectedCamera = {
+        url: $option.data('url'),
+        flipH: $option.data('flip-h') === true,
+        flipV: $option.data('flip-v') === true
+    };
+    $('#saveIpBtn')
+        .html('Connect to Camera')
+        .prop('disabled', false)
+        .removeClass('btn-success')
+        .addClass('btn-primary');
+}
+
+function connectCamera(ip, cam) {
+    // Stop any existing update interval
+    if (updateInterval) {
+        clearInterval(updateInterval);
+        updateInterval = null;
+    }
+    if (typeof cancelCalibration === 'function') cancelCalibration();
+
+    printerIp = ip;
+    currentCameraUrl = cam.url;
+
+    // Remember for next time
+    AxiscopeSettings.set('printerIp', ip);
+    AxiscopeSettings.set('cameraUrl', cam.url);
+
+    // Saved flips win over Moonraker's camera defaults
+    const saved = AxiscopeSettings.getCamera(cam.url);
+    const flipH = saved.flipH !== undefined ? saved.flipH : cam.flipH;
+    const flipV = saved.flipV !== undefined ? saved.flipV : cam.flipV;
+
+    $('#zoom-image').attr('src', cam.url);
+    setFlip(flipH, flipV);
+
+    // Initialize button URLs and data attributes
+    $("#home-all")
+        .attr("data-url", printerUrl(printerIp, '/printer/gcode/script?script=G28'))
+        .attr("data-homed", "false")
+        .addClass("btn-danger").removeClass("btn-primary");
+
+    $("#qgl")
+        .attr("data-url", printerUrl(printerIp, '/printer/gcode/script?script=QUAD_GANTRY_LEVEL'))
+        .attr("data-qgl", "false")
+        .addClass("btn-danger").removeClass("btn-primary");
+
+    $("#disable-motors")
+        .attr("data-url", printerUrl(printerIp, '/printer/gcode/script?script=M84'))
+        .attr("data-motoron", "false")
+        .addClass("btn-danger").removeClass("btn-primary");
+
+    // Show the camera and jog pad
+    $('#jogFrame').removeClass('d-none');
+
+    $('#printerModal').modal('hide');
+
+    initializePositionBars();
+    updateJogHint();
+
+    // Start the update cycle
+    updatePage();
+    getTools();
+    updateInterval = setInterval(updatePage, 1000);
+}
+
 $(document).ready(function() {
     $("#ChangePrinter").click(function(){
         $('#printerModal').modal('show');
     });
 
-    // Pre-populate the printer IP with current host (without port)
-    const currentHost = window.location.hostname;
-    $('#printerIp').val(currentHost);
+    // Use the saved printer if there is one, otherwise the current host
+    const savedIp = AxiscopeSettings.get('printerIp', '');
+    $('#printerIp').val(savedIp || window.location.hostname);
 
-    // Initialize printer modal
-    $('#printerModal').modal('show');
+    if (savedIp) {
+        // Reconnect silently; the modal only appears if something fails
+        connectPrinter(savedIp, AxiscopeSettings.get('cameraUrl', null));
+    } else {
+        $('#printerModal').modal('show');
+    }
 
     // Handle IP input validation
     $('#printerIp').on('input', function() {
         const ip = $(this).val();
         if (ip && !isValidIP(ip)) {
-            $('#ipError').show();
+            $('#ipError').removeClass('text-success').addClass('text-danger')
+                .text('Invalid IP address format').show();
             $('#saveIpBtn').prop('disabled', true);
         } else {
             $('#ipError').hide();
@@ -391,7 +578,6 @@ $(document).ready(function() {
         }
     });
 
-    // Handle save IP button click
     // Initialize macro list
     loadMacros();
 
@@ -408,7 +594,7 @@ $(document).ready(function() {
     // Set endstop position button handler
     $('#set-endstop-position').on('click', function() {
         const url = printerUrl(printerIp, '/printer/gcode/script?script=' + encodeURIComponent('AXISCOPE_SET_ENDSTOP_POSITION CURRENT=1'));
-        
+
         $.get(url)
             .done(function() {
                 console.log('Set endstop position to current location');
@@ -417,7 +603,7 @@ $(document).ready(function() {
                 const originalText = button.html();
                 button.html('<i class="bi bi-check-circle"></i> Position Set!');
                 button.removeClass('btn-success').addClass('btn-outline-success');
-                
+
                 setTimeout(function() {
                     button.html(originalText);
                     button.removeClass('btn-outline-success').addClass('btn-success');
@@ -430,7 +616,7 @@ $(document).ready(function() {
                 const originalText = button.html();
                 button.html('<i class="bi bi-x-circle"></i> Failed');
                 button.removeClass('btn-success').addClass('btn-danger');
-                
+
                 setTimeout(function() {
                     button.html(originalText);
                     button.removeClass('btn-danger').addClass('btn-success');
@@ -438,209 +624,26 @@ $(document).ready(function() {
             });
     });
 
+    function modalIp() {
+        return $('#printerIp').val().trim().replace(/^https?:\/\//, '');
+    }
+
+    // Modal button: connect to the printer, or to the selected camera
     $('#saveIpBtn').on('click', function() {
-        let ip = $('#printerIp').val();
-        // Strip http:// or https:// when saving the IP
-        ip = ip.replace(/^https?:\/\//, '');
-        if (isValidIP(ip)) {
-            console.log('Checking printer connection:', ip);
-            
-            // Disable the button and show loading state
-            $(this).prop('disabled', true);
-            $(this).html('<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Connecting...');
-            
-            // Make the connection request
-            $.get(printerUrl(ip, "/server/info"), function(con_data) {
-                console.log('Connection response:', con_data);
-                
-                if (con_data['result'] && con_data['result']['klippy_connected']) {
-                    console.log('Successfully connected to printer');
-                    // Show success state
-                    $('#ipError').removeClass('text-danger').addClass('text-success').text('Connected successfully!').show();
-                    
-                    // Disable IP input and show disconnect button
-                    $('#printerIp').prop('disabled', true);
-                    $('#disconnectBtn').show();
-                    
-                    // Fetch camera list
-                    $.get(printerUrl(ip, "/server/webcams/list"), function(cam_data) {
-                        console.log('Camera data:', cam_data);
-                        
-                        if (cam_data['result'] && cam_data['result']['webcams']) {
-                            const cams = cam_data['result']['webcams'];
-                            
-                            if (cams.length > 0) {
-                                // Clear and populate camera list
-                                const $cameraList = $('#cameraList');
-                                $cameraList.empty();
-                                
-                                cams.forEach(function(cam) {
-                                    // Use the full URL from Moonraker if it's a complete URL, otherwise construct it
-                                    let streamUrl;
-                                    try {
-                                        const url = new URL(cam.stream_url);
-                                        // It's a full URL, use it as-is
-                                        streamUrl = cam.stream_url;
-                                    } catch (e) {
-                                        // Not a full URL, it's just a path - construct with printer IP
-                                        streamUrl = printerUrl(ip, cam.stream_url);
-                                    }
-                                    const snapshotUrl = streamUrl.replace('?action=stream', '?action=snapshot');
-                                    
-                                    const cameraOption = `
-                                        <div class="camera-option p-2" 
-                                             data-url="${streamUrl}"
-                                             data-flip-h="${cam.flip_horizontal}"
-                                             data-flip-v="${cam.flip_vertical}"
-                                        >
-                                            <div class="d-flex align-items-center">
-                                                <div class="me-3">
-                                                    <img src="${snapshotUrl}" 
-                                                         class="camera-preview"
-                                                         alt="${cam.name}"
-                                                         data-flip-h="${cam.flip_horizontal}"
-                                                         data-flip-v="${cam.flip_vertical}"
-                                                    >
-                                                </div>
-                                                <div>
-                                                    <h6 class="mb-0">${cam.name}</h6>
-                                                    <small class="text-muted">Click to select</small>
-                                                </div>
-                                            </div>
-                                        </div>`;
-                                    
-                                    $cameraList.append(cameraOption);
-                                });
-                                
-                                // Show camera selection
-                                $('#camera-select').show();
-                                // Update button for next step
-                                $('#saveIpBtn').html('Select Camera').prop('disabled', false)
-                                              .removeClass('btn-primary').addClass('btn-success');
-                            } else {
-                                $('#ipError').removeClass('text-success').addClass('text-danger')
-                                           .text('No cameras found on this printer').show();
-                            }
-                        } else {
-                            $('#ipError').removeClass('text-success').addClass('text-danger')
-                                       .text('Error fetching camera list').show();
-                        }
-                    }).fail(function(error) {
-                        console.error('Failed to fetch cameras:', error);
-                        $('#ipError').removeClass('text-success').addClass('text-danger')
-                                   .text('Could not fetch camera list from printer').show();
-                    });
-                } else {
-                    console.log('Printer not ready');
-                    $('#ipError').show().text('Printer is not ready. Please check if Klippy is connected.');
-                    // Reset button
-                    $('#saveIpBtn').prop('disabled', false).text('Retry Connection');
-                }
-            }).fail(function(error) {
-                console.error('Connection failed:', error);
-                $('#ipError').show().text('Could not connect to printer. Please check the IP address and ensure the printer is online.');
-                // Reset button
-                $('#saveIpBtn').prop('disabled', false).text('Retry Connection');
-            });
+        if (selectedCamera) {
+            connectCamera(modalIp(), selectedCamera);
+        } else {
+            connectPrinter(modalIp());
         }
     });
 
-    // Camera selection handler
-    function connectCamera(selectedUrl, flipHorizontal, flipVertical) {
-        // Stop any existing update interval
-        if (updateInterval) {
-            clearInterval(updateInterval);
-            updateInterval = null;
-        }
-
-        const selectedIp = $('#printerIp').val();
-        const webcamPath = selectedUrl.split(selectedIp)[1];  // Extract the path part
-        
-        // Update variables directly
-        printerIp = selectedIp; // Update the global variable
-        WebcamPath = webcamPath;
-        
-        // Reset flip button states first
-        $('#flip-horizontal, #flip-vertical').removeClass('btn-primary').addClass('btn-secondary');
-        
-        // Update UI and set flip states
-        const $zoomImage = $("#zoom-image");
-        $zoomImage
-            .attr("src", printerUrl(printerIp, WebcamPath))
-            .data('flip-h', flipHorizontal)
-            .data('flip-v', flipVertical);
-            
-        // Set initial flip states for buttons and apply transformations
-        if (flipHorizontal) {
-            $('#flip-horizontal').removeClass('btn-secondary').addClass('btn-primary');
-            isFlippedHorizontal = true;
-        }
-        if (flipVertical) {
-            $('#flip-vertical').removeClass('btn-secondary').addClass('btn-primary');
-            isFlippedVertical = true;
-        }
-        // Apply the initial transform
-        updateTransform();
-        
-        // Initialize button URLs and data attributes
-        $("#home-all")
-            .attr("data-url", printerUrl(printerIp, '/printer/gcode/script?script=G28'))
-            .attr("data-homed", "false")
-            .addClass("btn-danger").removeClass("btn-primary");
-            
-        $("#qgl")
-            .attr("data-url", printerUrl(printerIp, '/printer/gcode/script?script=QUAD_GANTRY_LEVEL'))
-            .attr("data-qgl", "false")
-            .addClass("btn-danger").removeClass("btn-primary");
-            
-        $("#disable-motors")
-            .attr("data-url", printerUrl(printerIp, '/printer/gcode/script?script=M84'))
-            .attr("data-motoron", "false")
-            .addClass("btn-danger").removeClass("btn-primary");
-        
-        // Show the camera container
-        $('#camContainer').fadeIn();
-        
-        // Close the modal
-        $('#printerModal').modal('hide');
-        
-        // Clear any existing position bars
-        $('#BouncePositionBar, #BigPositionBar').empty();
-        
-        // Initialize position bars and other UI
-        initializePositionBars();
-        
-        // Start the update cycle
-        updatePage();
-        getTools();
-        updateInterval = setInterval(updatePage, 1000);
-    }
-
-    // Camera selection click handler
     $(document).on('click', '.camera-option', function() {
-        const selectedUrl = $(this).data('url');
-        const flipH = $(this).data('flip-h');
-        const flipV = $(this).data('flip-v');
-        
-        if (selectedUrl) {
-            console.log('Selected camera URL:', selectedUrl);
-            console.log('Flip settings - H:', flipH, 'V:', flipV);
-            
-            // Update selection visual
-            $('.camera-option').removeClass('selected');
-            $(this).addClass('selected');
-            
-            // Update button state
-            $('#saveIpBtn')
-                .html('Connect to Camera')
-                .prop('disabled', false)
-                .removeClass('btn-success')
-                .addClass('btn-primary')
-                .off('click')
-                .on('click', function() {
-                    connectCamera(selectedUrl, flipH, flipV);
-                });
-        }
+        selectCameraOption($(this));
+    });
+
+    $(document).on('dblclick', '.camera-option', function() {
+        selectCameraOption($(this));
+        connectCamera(modalIp(), selectedCamera);
     });
 
     // Disconnect handler
@@ -650,94 +653,35 @@ $(document).ready(function() {
             clearInterval(updateInterval);
             updateInterval = null;
         }
+        if (typeof cancelCalibration === 'function') cancelCalibration();
 
         // Reset global variables
         printerIp = '';
-        WebcamPath = '/webcam?action=stream';
-        path = '/webcam?action=stream';
+        currentCameraUrl = null;
+        selectedCamera = null;
 
-        // Enable IP input
         $('#printerIp').prop('disabled', false);
-        
-        // Hide disconnect button
         $(this).hide();
-        
-        // Hide camera selection
         $('#camera-select').hide();
-        
-        // Hide camera container
-        $('#camContainer').hide();
-        
+        $('#jogFrame').addClass('d-none');
+        $('#zoom-image').attr('src', '');
+
         // Reset button state
         $('#saveIpBtn').html('Save IP')
                        .prop('disabled', false)
                        .removeClass('btn-success btn-primary')
                        .addClass('btn-primary');
-        
-        // Clear error/success message
+
         $('#ipError').hide();
-        
-        // Clear camera list
         $('#cameraList').empty();
-
-        // Clear position bars
-        $('#BouncePositionBar, #BigPositionBar').empty();
+        $('#BigPositionBar').empty();
     });
-
-    // // Initialize UI components
-    // $("#zoom-image").attr("src", printerUrl(printerIp, WebcamPath));
-    // $("#home-all").attr("data-url", printerUrl(printerIp, '/printer/gcode/script?script=G28'));
-    // $("#qgl").attr("data-url", printerUrl(printerIp, '/printer/gcode/script?script=QUAD_GANTRY_LEVEL'));
-    // $("#disable-motors").attr("data-url", printerUrl(printerIp, '/printer/gcode/script?script=M84'));
-
-    // dont think we need that just yet
-
-    // Don't initialize anything until printer and camera are connected
 });
 
 // Initialize position bars
 function initializePositionBars() {
     const bounceMove = (axis, value) => printerUrl(printerIp, '/printer/gcode/script?script=' + ComandsUrl(axis,value));
-    // Clear both position bar containers
-    $('#BouncePositionBar, #BigPositionBar').empty();
-    const $container = $("#BouncePositionBar");
-    const axes = ["X", "Y"];
-    
-    axes.forEach(axis => {
-        const $row = $('<div class="row pb-1"></div>');
-        const $toolbar = $('<div class="btn-toolbar justify-content-center" role="toolbar" aria-label="Movement Toolbar"></div>');
-        const $btnGroup = $('<div class="btn-group btn-group-sm ps-5 pe-5" role="group"></div>');
-
-        [-0.5, -0.1, -0.05, -0.01].forEach(value => {
-            $('<button>', {
-                type: "button",
-                class: "btn btn-secondary border",
-                "data-url": bounceMove(axis, value),
-                text: value.toFixed(2)
-            }).appendTo($btnGroup);
-        });
-
-        $('<button>', {
-            type: "button",
-            class: "btn btn-dark border border-dark",
-            "data-url": printerUrl(printerIp, `/printer/gcode/script?script=G28${axis}`),
-            id: `home-fine-${axis.toLowerCase()}`,
-            text: axis
-        }).appendTo($btnGroup);
-
-        [0.01, 0.05, 0.1, 0.5].forEach(value => {
-            $('<button>', {
-                type: "button",
-                class: "btn btn-secondary border",
-                "data-url": bounceMove(axis, value),
-                text: `+${value.toFixed(2)}`
-            }).appendTo($btnGroup);
-        });
-
-        $toolbar.append($btnGroup);
-        $row.append($toolbar);
-        $container.append($row);
-    });
+    $('#BigPositionBar').empty();
 
     const $containerBigPos = $("#BigPositionBar");
     const axesBigPos = ["X", "Y", "Z"];
